@@ -14,6 +14,11 @@ export interface Subscription {
   lastPaymentTxHash?: string;
   status: 'active' | 'paused' | 'cancelled';
   paymentHistory: PaymentRecord[];
+  paymentMethod: 'manual' | 'wallet' | 'escrow';
+  walletAddress?: string; // For subscription wallet method
+  escrowId?: string; // For escrow method
+  prepaidUntil?: Date; // For wallet/escrow methods
+  walletBalance?: number; // Current balance in subscription wallet
 }
 
 export interface PaymentRecord {
@@ -21,6 +26,7 @@ export interface PaymentRecord {
   amount: number;
   txHash: string;
   status: 'success' | 'failed';
+  type: 'subscription' | 'funding'; // funding for wallet/escrow
 }
 
 interface SubscriptionsContextType {
@@ -30,18 +36,21 @@ interface SubscriptionsContextType {
     creatorAddress: string,
     amount: number,
     frequency: 'daily' | 'weekly' | 'monthly'
-  ) => Promise<{ success: boolean; subscriptionId?: string }>;
+  ) => Promise<{ success: boolean; subscriptionId?: string; subscription?: Subscription }>;
   pauseSubscription: (id: string) => void;
   resumeSubscription: (id: string) => void;
   cancelSubscription: (id: string) => void;
-  recordPayment: (subscriptionId: string, txHash: string) => void;
+  recordPayment: (subscriptionId: string, txHash: string, type?: 'subscription' | 'funding') => void;
+  updatePaymentMethod: (subscriptionId: string, method: 'manual' | 'wallet' | 'escrow', details?: any) => void;
   getNextPaymentDate: (subscription: Subscription) => Date;
   getDueSubscriptions: () => Subscription[];
+  getSubscriptionById: (id: string) => Subscription | undefined;
+  updateWalletBalance: (subscriptionId: string, balance: number) => void;
 }
 
 const SubscriptionsContext = createContext<SubscriptionsContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'microstream_subscriptions_v2';
+const STORAGE_KEY = 'microstream_subscriptions_v3';
 
 export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
@@ -65,6 +74,7 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
           startDate: new Date(sub.startDate),
           nextPaymentDate: new Date(sub.nextPaymentDate),
           lastPaymentDate: sub.lastPaymentDate ? new Date(sub.lastPaymentDate) : undefined,
+          prepaidUntil: sub.prepaidUntil ? new Date(sub.prepaidUntil) : undefined,
           paymentHistory: sub.paymentHistory.map((p: any) => ({
             ...p,
             date: new Date(p.date)
@@ -108,16 +118,33 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const getDueSubscriptions = (): Subscription[] => {
     const now = new Date();
-    return subscriptions.filter(
-      sub => sub.status === 'active' && sub.nextPaymentDate <= now
-    );
+    return subscriptions.filter(sub => {
+      if (sub.status !== 'active') return false;
+      
+      // For manual payments, check if due
+      if (sub.paymentMethod === 'manual') {
+        return sub.nextPaymentDate <= now;
+      }
+      
+      // For wallet/escrow, check if wallet needs refunding
+      if (sub.paymentMethod === 'wallet' || sub.paymentMethod === 'escrow') {
+        if (sub.prepaidUntil && sub.prepaidUntil <= now) {
+          return true; // Needs refunding
+        }
+        if (sub.walletBalance !== undefined && sub.walletBalance < sub.amount) {
+          return true; // Low balance
+        }
+      }
+      
+      return false;
+    });
   };
 
   const createSubscription = async (
     creatorAddress: string,
     amount: number,
     frequency: 'daily' | 'weekly' | 'monthly'
-  ): Promise<{ success: boolean; subscriptionId?: string }> => {
+  ): Promise<{ success: boolean; subscriptionId?: string; subscription?: Subscription }> => {
     if (!user?.address) {
       return { success: false };
     }
@@ -131,7 +158,8 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
       startDate: new Date(),
       nextPaymentDate: new Date(),
       status: 'active',
-      paymentHistory: []
+      paymentHistory: [],
+      paymentMethod: 'manual' // Default to manual, user can change later
     };
 
     // Calculate next payment date based on frequency
@@ -139,7 +167,33 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
 
     setSubscriptions(prev => [...prev, newSubscription]);
 
-    return { success: true, subscriptionId: newSubscription.id };
+    return { 
+      success: true, 
+      subscriptionId: newSubscription.id,
+      subscription: newSubscription 
+    };
+  };
+
+  const updatePaymentMethod = (
+    subscriptionId: string, 
+    method: 'manual' | 'wallet' | 'escrow',
+    details?: any
+  ) => {
+    setSubscriptions(prev =>
+      prev.map(sub => {
+        if (sub.id === subscriptionId) {
+          return {
+            ...sub,
+            paymentMethod: method,
+            walletAddress: details?.walletAddress,
+            escrowId: details?.escrowId,
+            prepaidUntil: details?.prepaidUntil,
+            walletBalance: details?.walletBalance
+          };
+        }
+        return sub;
+      })
+    );
   };
 
   const pauseSubscription = (id: string) => {
@@ -173,27 +227,51 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
     );
   };
 
-  const recordPayment = (subscriptionId: string, txHash: string) => {
+  const recordPayment = (
+    subscriptionId: string, 
+    txHash: string,
+    type: 'subscription' | 'funding' = 'subscription'
+  ) => {
     setSubscriptions(prev =>
       prev.map(sub => {
         if (sub.id === subscriptionId) {
           const paymentRecord: PaymentRecord = {
             date: new Date(),
-            amount: sub.amount,
+            amount: type === 'subscription' ? sub.amount : 0, // Will be set for funding
             txHash,
-            status: 'success'
+            status: 'success',
+            type
           };
 
-          return {
+          const updatedSub = {
             ...sub,
-            lastPaymentDate: new Date(),
-            lastPaymentTxHash: txHash,
-            nextPaymentDate: getNextPaymentDate(sub),
             paymentHistory: [...sub.paymentHistory, paymentRecord]
           };
+
+          if (type === 'subscription') {
+            updatedSub.lastPaymentDate = new Date();
+            updatedSub.lastPaymentTxHash = txHash;
+            updatedSub.nextPaymentDate = getNextPaymentDate(sub);
+          }
+
+          return updatedSub;
         }
         return sub;
       })
+    );
+  };
+
+  const getSubscriptionById = (id: string): Subscription | undefined => {
+    return subscriptions.find(sub => sub.id === id);
+  };
+
+  const updateWalletBalance = (subscriptionId: string, balance: number) => {
+    setSubscriptions(prev =>
+      prev.map(sub =>
+        sub.id === subscriptionId 
+          ? { ...sub, walletBalance: balance } 
+          : sub
+      )
     );
   };
 
@@ -207,8 +285,11 @@ export const SubscriptionsProvider: React.FC<{ children: React.ReactNode }> = ({
         resumeSubscription,
         cancelSubscription,
         recordPayment,
+        updatePaymentMethod,
         getNextPaymentDate,
-        getDueSubscriptions
+        getDueSubscriptions,
+        getSubscriptionById,
+        updateWalletBalance
       }}
     >
       {children}

@@ -1,6 +1,6 @@
 // src/components/SubscriptionCard.tsx
 import React, { useState } from 'react';
-import { Calendar, DollarSign, User, Pause, Play, X, CreditCard, Clock, CheckCircle } from 'lucide-react';
+import { Calendar, DollarSign, User, Pause, Play, X, CreditCard, Clock, CheckCircle, Wallet, Lock, AlertCircle } from 'lucide-react';
 import { Subscription } from '../context/SubscriptionsContext';
 import { useSubscriptions } from '../context/SubscriptionsContext';
 import PaymentQRCode from './PaymentQRCode';
@@ -31,7 +31,39 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
     }
   };
 
-  const isDue = subscription.status === 'active' && new Date(subscription.nextPaymentDate) <= new Date();
+  const getPaymentMethodIcon = () => {
+    switch (subscription.paymentMethod) {
+      case 'wallet':
+        return <Wallet className="w-4 h-4 text-indigo-600" />;
+      case 'escrow':
+        return <Lock className="w-4 h-4 text-purple-600" />;
+      default:
+        return <CreditCard className="w-4 h-4 text-gray-600" />;
+    }
+  };
+
+  const getPaymentMethodLabel = () => {
+    switch (subscription.paymentMethod) {
+      case 'wallet':
+        return 'Subscription Wallet';
+      case 'escrow':
+        return 'Escrow Prepaid';
+      default:
+        return 'Manual Approval';
+    }
+  };
+
+  const isDue = subscription.status === 'active' && 
+    subscription.paymentMethod === 'manual' && 
+    new Date(subscription.nextPaymentDate) <= new Date();
+
+  const needsRefunding = subscription.status === 'active' && 
+    (subscription.paymentMethod === 'wallet' || subscription.paymentMethod === 'escrow') &&
+    subscription.prepaidUntil && new Date(subscription.prepaidUntil) <= new Date();
+
+  const lowBalance = subscription.paymentMethod === 'wallet' && 
+    subscription.walletBalance !== undefined && 
+    subscription.walletBalance < subscription.amount;
 
   const handlePaymentSuccess = (txHash: string) => {
     recordPayment(subscription.id, txHash);
@@ -60,7 +92,8 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
 
   return (
     <>
-      <div className={`bg-white rounded-lg shadow-md p-6 border ${isDue ? 'border-orange-300' : 'border-gray-200'} hover:shadow-lg transition-shadow`}>
+      <div className={`bg-white rounded-lg shadow-md p-6 border ${isDue || needsRefunding ? 'border-orange-300' : 'border-gray-200'} hover:shadow-lg transition-shadow`}>
+        {/* Alerts */}
         {isDue && (
           <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-4 flex items-center justify-between">
             <div className="flex items-center space-x-2">
@@ -77,6 +110,32 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
           </div>
         )}
 
+        {needsRefunding && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="w-5 h-5 text-yellow-600" />
+              <span className="text-sm font-medium text-yellow-800">Refunding Required</span>
+            </div>
+            <button
+              onClick={handlePayNow}
+              disabled={isProcessing}
+              className="bg-yellow-600 text-white px-3 py-1 rounded-md text-sm hover:bg-yellow-700 disabled:opacity-50"
+            >
+              Refund Wallet
+            </button>
+          </div>
+        )}
+
+        {lowBalance && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="w-5 h-5 text-red-600" />
+              <span className="text-sm text-red-800">Low wallet balance: {subscription.walletBalance} XRP</span>
+            </div>
+          </div>
+        )}
+
+        {/* Header */}
         <div className="flex justify-between items-start mb-4">
           <div className="flex items-center space-x-2">
             <User className="w-5 h-5 text-gray-600" />
@@ -89,6 +148,7 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
           </span>
         </div>
 
+        {/* Details */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
@@ -96,6 +156,17 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
               <span className="text-lg font-semibold">{subscription.amount} XRP</span>
             </div>
             <span className="text-sm text-gray-500 capitalize">{subscription.frequency}</span>
+          </div>
+
+          {/* Payment Method */}
+          <div className="flex items-center space-x-2 bg-gray-50 rounded-lg px-3 py-2">
+            {getPaymentMethodIcon()}
+            <span className="text-sm font-medium">{getPaymentMethodLabel()}</span>
+            {subscription.prepaidUntil && (
+              <span className="text-xs text-gray-500 ml-auto">
+                Prepaid until: {formatDate(subscription.prepaidUntil)}
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4 text-sm">
@@ -116,10 +187,11 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
             </div>
           )}
 
+          {/* Actions */}
           <div className="pt-4 border-t flex space-x-2">
             {subscription.status !== 'cancelled' && (
               <>
-                {!isDue && subscription.status === 'active' && (
+                {!isDue && !needsRefunding && subscription.status === 'active' && subscription.paymentMethod === 'manual' && (
                   <button
                     onClick={handlePayNow}
                     className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 text-sm"
@@ -162,8 +234,9 @@ export const SubscriptionCard: React.FC<SubscriptionCardProps> = ({ subscription
       {showPaymentQR && (
         <PaymentQRCode
           creatorAddress={subscription.creatorAddress}
-          amount={subscription.amount}
+          amount={needsRefunding ? subscription.amount * 3 : subscription.amount}
           subscriptionId={subscription.id}
+          memo={needsRefunding ? 'Prepayment for subscription: wallet refund' : undefined}
           onSuccess={handlePaymentSuccess}
           onCancel={() => {
             setShowPaymentQR(false);

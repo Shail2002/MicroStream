@@ -2,12 +2,13 @@
 import React, { useState, useEffect } from 'react';
 import QRCode from 'react-qr-code';
 import { xummService } from '../services/xumm-service';
-import { Check, X, Clock, Smartphone } from 'lucide-react';
+import { Check, X, Clock, Smartphone, Info } from 'lucide-react';
 
 interface PaymentQRCodeProps {
   creatorAddress: string;
   amount: number;
   subscriptionId: string;
+  memo?: string;
   onSuccess: (txHash: string) => void;
   onCancel: () => void;
 }
@@ -16,6 +17,7 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
   creatorAddress,
   amount,
   subscriptionId,
+  memo,
   onSuccess,
   onCancel
 }) => {
@@ -42,7 +44,9 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
         if (paymentStatus.signed && paymentStatus.txHash) {
           setStatus('signed');
           clearInterval(interval);
-          onSuccess(paymentStatus.txHash);
+          setTimeout(() => {
+            onSuccess(paymentStatus.txHash!);
+          }, 2000);
         } else if (paymentStatus.cancelled) {
           setStatus('cancelled');
           clearInterval(interval);
@@ -50,7 +54,7 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
       } catch (err) {
         console.error('Status check error:', err);
       }
-    }, 2000); // Check every 2 seconds
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [paymentData, onSuccess]);
@@ -58,10 +62,11 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
   const createPaymentRequest = async () => {
     try {
       setLoading(true);
-      const data = await xummService.createSubscriptionPayment(
+      const paymentMemo = memo || `subscription:${subscriptionId}`;
+      const data = await xummService.createPaymentRequest(
         creatorAddress,
-        amount,
-        subscriptionId
+        (amount * 1000000).toString(), // Convert to drops
+        paymentMemo
       );
       setPaymentData(data);
     } catch (err) {
@@ -126,10 +131,16 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
                 <span className="text-gray-600">Amount:</span>
                 <span className="font-semibold">{amount} XRP</span>
               </div>
-              <div className="flex justify-between">
+              <div className="flex justify-between mb-2">
                 <span className="text-gray-600">To:</span>
-                <span className="font-mono text-sm">{creatorAddress.slice(0, 8)}...</span>
+                <span className="font-mono text-sm">{creatorAddress.slice(0, 8)}...{creatorAddress.slice(-6)}</span>
               </div>
+              {memo && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Purpose:</span>
+                  <span className="text-sm">{memo.includes('Prepayment') ? 'Subscription Funding' : 'Subscription Payment'}</span>
+                </div>
+              )}
             </div>
 
             {/* QR Code */}
@@ -147,6 +158,14 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
             <div className="flex items-center justify-center space-x-2 text-gray-600 mb-6">
               <Clock className="w-5 h-5 animate-pulse" />
               <span>Waiting for approval...</span>
+            </div>
+
+            {/* Info Box */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6 flex items-start space-x-2">
+              <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-blue-800">
+                Open XUMM app on your phone and scan this QR code, or click the button below to open directly.
+              </p>
             </div>
 
             {/* Actions */}
@@ -172,7 +191,11 @@ const PaymentQRCode: React.FC<PaymentQRCodeProps> = ({
           <div className="text-center">
             <Check className="w-16 h-16 text-green-500 mx-auto mb-4" />
             <h3 className="text-xl font-semibold mb-2">Payment Successful!</h3>
-            <p className="text-gray-600">Your subscription payment has been processed</p>
+            <p className="text-gray-600">
+              {memo?.includes('Prepayment') 
+                ? 'Your subscription has been funded successfully' 
+                : 'Your subscription payment has been processed'}
+            </p>
           </div>
         )}
 

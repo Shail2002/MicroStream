@@ -2,22 +2,28 @@
 import React, { useState } from 'react';
 import { useSubscriptions } from '../context/SubscriptionsContext';
 import { X, Calendar, DollarSign } from 'lucide-react';
+import PaymentChoiceModal from './PaymentChoiceModal';
+import PaymentQRCode from './PaymentQRCode';
 
 interface CreateSubscriptionProps {
   onClose: () => void;
 }
 
 const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
-  const { createSubscription } = useSubscriptions();
+  const { createSubscription, updatePaymentMethod } = useSubscriptions();
+  const [step, setStep] = useState<'details' | 'payment-choice' | 'payment'>('details');
   const [formData, setFormData] = useState({
     creatorAddress: '',
     amount: '',
     frequency: 'monthly' as 'daily' | 'weekly' | 'monthly'
   });
+  const [newSubscription, setNewSubscription] = useState<any>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'manual' | 'wallet' | 'escrow'>('manual');
+  const [prepayAmount, setPrepayAmount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleDetailsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
@@ -29,9 +35,9 @@ const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
         formData.frequency
       );
 
-      if (result.success) {
-        alert('✅ Subscription created successfully!');
-        onClose();
+      if (result.success && result.subscription) {
+        setNewSubscription(result.subscription);
+        setStep('payment-choice');
       } else {
         setError('Failed to create subscription');
       }
@@ -42,11 +48,62 @@ const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
     }
   };
 
+  const handlePaymentChoice = (method: 'manual' | 'wallet' | 'escrow', amount?: number) => {
+    setPaymentMethod(method);
+    setPrepayAmount(amount || 0);
+    
+    // Update the subscription with the chosen payment method
+    if (newSubscription) {
+      updatePaymentMethod(newSubscription.id, method);
+    }
+    
+    if (method === 'manual') {
+      // For manual, just close - no immediate payment needed
+      alert('✅ Subscription created! You\'ll be notified when payments are due.');
+      onClose();
+    } else if (method === 'wallet') {
+      // For wallet method, redirect to wallet funding instead of payment
+      alert('✅ Subscription created! Please fund your subscription wallet from the dashboard.');
+      onClose();
+    } else if (method === 'escrow' && amount && amount > 0) {
+      // For escrow, proceed to payment
+      setStep('payment');
+    }
+  };
+
+  const handlePaymentSuccess = (txHash: string) => {
+    alert(`✅ Subscription funded successfully! TX: ${txHash}`);
+    onClose();
+  };
+
   const frequencyOptions = [
     { value: 'daily', label: 'Daily' },
     { value: 'weekly', label: 'Weekly' },
     { value: 'monthly', label: 'Monthly' }
   ];
+
+  if (step === 'payment-choice' && newSubscription) {
+    return (
+      <PaymentChoiceModal
+        subscription={newSubscription}
+        onClose={() => setStep('details')}
+        onChoice={handlePaymentChoice}
+      />
+    );
+  }
+
+  if (step === 'payment' && newSubscription) {
+    return (
+      <PaymentQRCode
+        creatorAddress={newSubscription.creatorAddress}
+        amount={prepayAmount}
+        subscriptionId={newSubscription.id}
+        memo={`Prepayment for subscription: ${paymentMethod}`}
+        onSuccess={handlePaymentSuccess}
+        onCancel={() => setStep('payment-choice')}
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -61,7 +118,7 @@ const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleDetailsSubmit} className="space-y-4">
           {/* Creator Address */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -129,8 +186,8 @@ const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
           {/* Info Box */}
           <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <p className="text-sm text-blue-800">
-              <strong>Note:</strong> You'll approve each payment using XUMM when it's due.
-              No automatic deductions will occur without your consent.
+              <strong>Next Step:</strong> Choose your preferred payment method - 
+              manual approval, subscription wallet, or escrow.
             </p>
           </div>
 
@@ -148,7 +205,7 @@ const CreateSubscription: React.FC<CreateSubscriptionProps> = ({ onClose }) => {
               disabled={loading}
               className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Creating...' : 'Create Subscription'}
+              {loading ? 'Creating...' : 'Next: Payment Method'}
             </button>
           </div>
         </form>
