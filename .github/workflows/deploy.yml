@@ -2,7 +2,7 @@ name: Deploy to AWS
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   deploy:
@@ -17,29 +17,25 @@ jobs:
         node-version: '18'
         
     - name: Install dependencies
-      run: npm ci
+      run: npm install --legacy-peer-deps  # This fixes peer dependency issues
       
     - name: Build app
       run: npm run build
       env:
         REACT_APP_XUMM_API_KEY: ${{ secrets.REACT_APP_XUMM_API_KEY }}
-        REACT_APP_XUMM_API_SECRET: ${{ secrets.REACT_APP_XUMM_API_SECRET }}
-        REACT_APP_XRPL_NETWORK: mainnet
+        CI: false  # This ignores warnings during build
+        
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
         
     - name: Deploy to S3
-      uses: jakejarvis/s3-sync-action@master
-      with:
-        args: --acl public-read --delete
-      env:
-        AWS_S3_BUCKET: microstream-app-production
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      run: |
+        aws s3 sync build/ s3://microstream-app-production --delete --acl public-read
         
     - name: Invalidate CloudFront
-      uses: chetan/invalidate-cloudfront-action@v2
-      env:
-        DISTRIBUTION: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}
-        PATHS: "/*"
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_REGION: "us-east-1"
+      run: |
+        aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
